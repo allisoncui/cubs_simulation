@@ -240,6 +240,212 @@ def SimulateBalances(T=365,
     data['id'] = randint(1000000000,9999999999)
     return data
 
+def SimulateBalances_fast(
+    T=365,
+    liquid_assets0=1e+04, mu_income_monthly=2000, sd_income_monthly=5, dt_income_paid=[14,28],
+    cash_consumption_share=.5, mu_consumption_monthly_target=100, sd_consumption_monthly_target=5,
+    dt_payment_due=15, dt_statement=23, min_payment_flat=35, fee_late=20, rate_interest=.17, credit_limit=8000,
+    prob_off_date_pay_card=0, prob_fullpay_cond_suffliq=.8, prob_liqmin_cond_suffliq=1,
+    rng=None
+):
+    """
+    Fast version of SimulateBalances; uses numpy arrays inside the daily loop
+    and constructs the DataFrame once at the end
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+
+    # vecotrized calendar
+    dt = pd.date_range('2009-12-31', periods=T+1).to_numpy()  # datetime64[ns]
+    day = pd.DatetimeIndex(dt).day.values
+    month = pd.DatetimeIndex(dt).month.values
+    year = pd.DatetimeIndex(dt).year.values
+
+    billing_cycle_end = (day == dt_statement).astype(np.int8)
+    billing_cycle = np.cumsum(billing_cycle_end) + 1
+    billing_cycle[billing_cycle_end == 1] -= 1
+    # first full month start
+    first_full_dt = np.datetime64('2010-01-01')
+    # derived params with lognormal
+    derived = genDerivedPars(mu_income_monthly, dt_income_paid, sd_income_monthly,
+                             mu_consumption_monthly_target, sd_consumption_monthly_target)
+    mu_income = float(derived['mu_income'])
+    sd_income = float(derived['sd_income'])
+    mu_c_log = float(derived['mu_c_log'])
+    sd_c_log = float(derived['sd_c_log'])
+
+    # preallocate arrays in numpy
+    liquid_assets = np.zeros(T+1, dtype=np.float64)
+    liquid_credits = np.zeros(T+1, dtype=np.float64)
+    consumption = np.zeros(T+1, dtype=np.float64)
+    cash_consumption = np.zeros(T+1, dtype=np.float64)
+    cc_consumption_cc = np.zeros(T+1, dtype=np.float64)
+    cc_consumption_cash = np.zeros(T+1, dtype=np.float64)
+    cc_consumption_total = np.zeros(T+1, dtype=np.float64)
+    credit_limit_arr = np.full(T+1, float(credit_limit), dtype=np.float64)
+    available_credit = np.zeros(T+1, dtype=np.float64)
+    outstanding_balance = np.zeros(T+1, dtype=np.float64)
+    statement_balance = np.zeros(T+1, dtype=np.float64)
+    residual_statement = np.zeros(T+1, dtype=np.float64)
+    payment_to_card = np.zeros(T+1, dtype=np.float64)
+    interest_charge = np.zeros(T+1, dtype=np.float64)
+    late_fee_arr = np.zeros(T+1, dtype=np.float64)
+    is_grace_period = np.zeros(T+1, dtype=np.int8)
+    is_revolving = np.zeros(T+1, dtype=np.int8)
+    min_payment_arr = np.zeros(T+1, dtype=np.float64)
+
+    # day 0
+    liquid_assets[0] = float(liquid_assets0)
+    available_credit[0]= float(credit_limit)
+    is_grace_period[0] = 1
+
+    # daily loop - read/write to array instead of df here
+    min_payment_pct = 0.01
+    for t in range(1, T+1):
+        # 1) carry forward
+        liquid_assets[t] = liquid_assets[t-1]
+        available_credit[t] = available_credit[t-1]
+        outstanding_balance[t] = outstanding_balance[t-1]
+        statement_balance[t] = statement_balance[t-1]
+        residual_statement[t] = residual_statement[t-1]
+        credit_limit_arr[t] = credit_limit_arr[t-1]
+
+        # 2) income on payday
+        if day[t] in dt_income_paid:
+            liquid_credits[t] = rng.normal(mu_income, sd_income)
+            liquid_assets[t] += liquid_credits[t]
+
+        # 3) desired consumption (lognormal, corrected params)
+        cons = rng.lognormal(mean=mu_c_log, sigma=sd_c_log)
+        cash_desired = cons * cash_consumption_share
+        cc_desired = cons - cash_desired
+
+        # 4) feasible consumption (clamped)
+        cash_use = min(cash_desired, liquid_assets[t])
+        cc_cc = min(cc_desired, available_credit[t])
+        cc_cash = min(cc_desired - cc_cc, max(liquid_assets[t] - cash_use, 0.0))
+        cons = cash_use + cc_cc + cc_cash
+        # apply consumption debits
+        liquid_assets[t] -= (cash_use + cc_cash)
+        outstanding_balance[t] += cc_cc
+        # available credit clamp
+        available_credit[t] = min(credit_limit_arr[t], max(credit_limit_arr[t] - outstanding_balance[t], 0.0))
+        # write 
+        consumption[t] = cons
+        cash_consumption[t] = cash_use
+        cc_consumption_cc[t] = cc_cc
+        cc_consumption_cash[t] = cc_cash
+        cc_consumption_total[t] = cc_cc + cc_cash
+
+        # 5) minimum payment rule
+        min_payment_arr[t] = max(min_payment_flat, min_payment_pct * max(statement_balance[t], 0.0))
+
+        # 6) payments
+        is_due_day = (day[t] == dt_payment_due) and (dt[t] >= first_full_dt)
+        if is_due_day:
+            amt_due = max(residual_statement[t], 0.0)
+            suffliq = liquid_assets[t] >= amt_due
+            if suffliq:
+                pay_in_full = (rng.random() < prob_fullpay_cond_suffliq)
+                payment = amt_due if pay_in_full else rng.uniform(0.0, 1.0) * amt_due
+            else:
+                pay_liqmin = (rng.random() < prob_liqmin_cond_suffliq)
+                payment = liquid_assets[t] if pay_liqmin else rng.uniform(0.0, 1.0) * liquid_assets[t]
+
+            # late fee & immediate grace toggle for under min payment
+            if payment < min(min_payment_arr[t], amt_due):
+                late_fee_arr[t] = fee_late
+                is_grace_period[t] = 0
+            else:
+                late_fee_arr[t] = 0.0
+        else:
+            late_fee_arr[t] = 0.0
+            if rng.random() < prob_off_date_pay_card:
+                payment = rng.uniform(0.0, 1.0) * min(liquid_assets[t], outstanding_balance[t])
+            else:
+                payment = 0.0
+
+        # CLAMP payment to outstanding & cash on hand
+        payment = max(0.0, min(payment, outstanding_balance[t], liquid_assets[t]))
+        # apply payment
+        payment_to_card[t] = payment
+        liquid_assets[t] -= payment
+        residual_statement[t] -= payment
+        outstanding_balance[t] -= payment
+        outstanding_balance[t] = max(outstanding_balance[t], 0.0)
+        # recompute available credit (clamped)
+        available_credit[t] = min(credit_limit_arr[t], max(credit_limit_arr[t] - outstanding_balance[t], 0.0))
+
+        # 7) revolving + grace logic
+        if is_due_day:
+            if residual_statement[t] > 0:
+                cyc = billing_cycle[t]
+                mask_now  = (billing_cycle[t:] == cyc)
+                mask_next = (billing_cycle[t:] == (cyc + 1))
+                is_grace_period[t:][mask_now | mask_next] = 0
+                is_revolving[t] = 1
+            else:
+                next_cyc = billing_cycle[t] + 1
+                mask_next = (billing_cycle[t:] == next_cyc)
+                is_grace_period[t:][mask_next] = 1
+                is_revolving[t] = 0
+        else:
+            # carry/set values; revolve if statement still owed and no grace
+            if (residual_statement[t] > 0) and (is_grace_period[t] == 0):
+                is_revolving[t] = 1
+            else:
+                # carry forward grace when not explicitly set today
+                if t > 0 and is_grace_period[t] not in (0, 1):
+                    is_grace_period[t] = is_grace_period[t-1]
+                is_revolving[t] = 0
+
+        # 8) interest accrues if no grace
+        if is_grace_period[t] == 0:
+            interest = outstanding_balance[t] * (rate_interest / 365.0)
+            interest_charge[t] = interest
+            outstanding_balance[t] = outstanding_balance[t] + interest
+            available_credit[t] = min(credit_limit_arr[t], max(credit_limit_arr[t] - outstanding_balance[t], 0.0))
+        else:
+            interest_charge[t] = 0.0
+
+        # 9) statement close
+        if day[t] == dt_statement:
+            statement_balance[t]  = outstanding_balance[t]
+            residual_statement[t] = statement_balance[t]
+
+    # build dataframe ONCE
+    out = pd.DataFrame({
+        'dt': dt,
+        'day': day,
+        'month': month,
+        'year': year,
+        'billing_cycle_end': billing_cycle_end,
+        'billing_cycle': billing_cycle,
+        'liquid_assets': liquid_assets,
+        'liquid_credits': liquid_credits,
+        'consumption': consumption,
+        'cash_consumption': cash_consumption,
+        'cc_consumption_cc': cc_consumption_cc,
+        'cc_consumption_cash': cc_consumption_cash,
+        'cc_consumption': cc_consumption_total,
+        'credit_limit': credit_limit_arr,
+        'available_credit': available_credit,
+        'outstanding_balance': outstanding_balance,
+        'statement_balance': statement_balance,
+        'residual_statement_balance': residual_statement,
+        'payment_to_card': payment_to_card,
+        'interest_charge': interest_charge,
+        'late_fee': late_fee_arr,
+        'is_grace_period': is_grace_period,
+        'is_revolving': is_revolving,
+        'min_payment': min_payment_arr,
+    })
+
+    # give simulation an ID upon exit vectorized
+    out['id'] = randint(1000000000, 9999999999)
+    return out
+
+
 def SimulatePanel(N,T):
     liquid_assets0_grid = lognorm.rvs(scale=1e+05,s=.5, size=N, random_state=None).tolist()
     mu_income_monthly_grid = lognorm.rvs(scale=1.2e+05/12,s=.5, size=N, random_state=None).tolist()
@@ -266,7 +472,7 @@ def SimulatePanel(N,T):
     frames = []  # collect per-person frames with this array
     for i in tqdm(range(N)):
         # Run simulation for i
-        data_d = SimulateBalances(
+        data_d = SimulateBalances_fast(
             T,
             liquid_assets0=liquid_assets0_grid[i],
             mu_income_monthly=mu_income_monthly_grid[i],
