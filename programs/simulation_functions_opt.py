@@ -132,7 +132,7 @@ def SimulateBalances(T=365,
             data.loc[t,'liquid_assets'] = data.loc[t,'liquid_assets'] - cash_consumption - cc_consumption_cash
             data.loc[t,'outstanding_balance'] = data.loc[t,'outstanding_balance'] + cc_consumption_cc
                 # Balance can exceed credit limit due to interest + fees
-            data.loc[t,'available_credit'] = max((data.loc[t,'credit_limit'] - data.loc[t,'outstanding_balance']), 0)
+            data.loc[t,'available_credit'] = min(data.loc[t,'credit_limit'], max(data.loc[t,'credit_limit'] - data.loc[t,'outstanding_balance'], 0.0))
             data.loc[t,'consumption'] = consumption
             data.loc[t,'cash_consumption'] = cash_consumption
             data.loc[t,'cc_consumption_cc'] = cc_consumption_cc
@@ -160,7 +160,7 @@ def SimulateBalances(T=365,
                         payment = amt_due
                     else:
                         # Pay partial according to Uniform
-                        # take into consideration minimum payment ?
+                        # Possibly take into consideration minimum payment - more likely to pay in min payment range and less outside
                         payment = np.random.uniform(0,1) * amt_due
                 # Insufficient liquidity for full payment
                 else:
@@ -190,12 +190,16 @@ def SimulateBalances(T=365,
                     payment = np.random.uniform(0,1) * (min(data.loc[t,'liquid_assets'], data.loc[t,'outstanding_balance']))
                 else:
                     payment = 0
+            # CLAMP: never pay more than cash on hand or current outstanding (prevents overpay/negative)
+            payment = max(0.0, min(float(payment), float(data.loc[t,'outstanding_balance']),float(data.loc[t,'liquid_assets'])))
             data.loc[t,'payment_to_card'] = payment
             data.loc[t,'liquid_assets'] = data.loc[t,'liquid_assets'] - payment
             data.loc[t,'residual_statement_balance'] = data.loc[t,'residual_statement_balance'] - payment
             data.loc[t,'outstanding_balance'] = data.loc[t,'outstanding_balance'] - payment
-            data.loc[t,'available_credit'] = max((data.loc[t,'credit_limit'] - data.loc[t,'outstanding_balance']), 0)
-    
+            # CLAMP: prevent tiny negatives due to float math / over-clamped payment
+            data.loc[t,'outstanding_balance'] = max(data.loc[t,'outstanding_balance'], 0.0)
+            # CLAMP: keep available credit within [0, credit_limit]
+            data.loc[t,'available_credit'] = min(data.loc[t,'credit_limit'],max(data.loc[t,'credit_limit'] - data.loc[t,'outstanding_balance'], 0.0))    
             # 7. Determine if agent is revolving
                 # If payment is due, you are revolving if you did not pay down statement, otherwise not revolving
             if (is_paydue_date):
@@ -210,7 +214,7 @@ def SimulateBalances(T=365,
                     data.loc[t:,'is_grace_period'] = np.where(data.loc[t:,'billing_cycle'] == (data.loc[t,'billing_cycle'] + 1), 1, data.loc[t:,'is_grace_period'])
                     data.loc[t,'is_revolving'] = 0
                 # If payment is not due, you are revolving only if you did not pay down statement while outside grace period
-            else :
+            else:
                 # Can only change grace period on due date, unless it recovered for this cycle based on last payment. If it recovered, it will be non-empty for this cycle since it was already set at payment
                 data.loc[t,'is_grace_period'] = np.where(np.isnan(data.loc[t,'is_grace_period']), data.loc[t-1,'is_grace_period'], data.loc[t,'is_grace_period'])
                 if ( (data.loc[t,'residual_statement_balance'] > 0) & (data.loc[t,'is_grace_period'] == 0) ):
@@ -223,7 +227,7 @@ def SimulateBalances(T=365,
             if (data.loc[t,'is_grace_period'] == 0):
                 data.loc[t,'interest_charge'] = data.loc[t,'outstanding_balance']*(rate_interest/365)
                 data.loc[t,'outstanding_balance'] = data.loc[t,'outstanding_balance'] + data.loc[t,'interest_charge']
-                data.loc[t,'available_credit'] = max((data.loc[t,'credit_limit'] - data.loc[t,'outstanding_balance']), 0)
+                data.loc[t,'available_credit'] = min(data.loc[t,'credit_limit'],max(data.loc[t,'credit_limit'] - data.loc[t,'outstanding_balance'], 0.0))            
             else:
                 data.loc[t,'interest_charge'] = 0
     
