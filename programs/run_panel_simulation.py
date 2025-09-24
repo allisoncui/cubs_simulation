@@ -20,10 +20,10 @@ os.chdir(wd)
 
 # File I/O ----------
 ## << Input >> ##
-sim_functions_file_input = 'programs/simulation_functions.py'
+sim_functions_file_input = 'cubs_simulation/programs/simulation_functions_opt.py'
 
 ## << Output >> ##
-panel_data_file_output = 'data/panel_sim_small.parquet'
+panel_data_file_output = 'cubs_simulation/data/panel_sim_small.parquet'
 
 # Parameters and seed ----------
 N = 100 # number of individuals
