@@ -1,0 +1,12 @@
+{
+  "run_dir": "/Users/allisoncui/cubs/cubs_simulation/data/run_20250924_152508_3046",
+  "panel_path": "/Users/allisoncui/cubs/cubs_simulation/data/run_20250924_152508_3046/panel.parquet",
+  "n_rows": 109600,
+  "n_people": 100,
+  "n_cycles": 3700,
+  "frac_revolver_cycles": 0.1881081081081081,
+  "daily_mean_consumption": 112.98881546039495,
+  "daily_mean_payment_to_card": 58.27410620982584,
+  "daily_mean_interest_charge": 0.2482558781081074,
+  "daily_mean_late_fee": 0.016240875912408758
+}
