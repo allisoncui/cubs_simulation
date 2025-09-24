@@ -185,3 +185,101 @@ meta = {
 }
 (run_dir / "analysis_meta.json").write_text(json.dumps(meta, indent=2))
 print(f"\nSaved analytics to {analytics_dir} and heatmaps to {figs_dir}")
+
+
+# trees
+# ---- Probability tree (6 months ahead) from one-step transitions ----
+# We use the Markov one-step transitions:
+# p_TR = P(R_{t+1}=1 | R_t=0), p_RR = P(R_{t+1}=1 | R_t=1)
+p_TR = float(trans_table.loc[0, "h1"])  # T -> R
+p_RR = float(trans_table.loc[1, "h1"])  # R -> R
+p_TT = 1.0 - p_TR
+p_RT = 1.0 - p_RR
+
+def plot_markov_tree(start_state="T", depth=4, fname="tree.png"):
+    """
+    Draw a binary probability tree up to `depth` steps, starting in state T or R.
+    States: T = Transactor (0), R = Revolver (1)
+    Node label: state and probability mass at that node (given start state).
+    Edge label: transition probability used on that edge.
+    """
+    import matplotlib.pyplot as plt
+
+    # state index: 0 = T, 1 = R
+    s0 = 0 if start_state.upper().startswith("T") else 1
+
+    # Transition matrix rows: from-state, cols: to-state (T,R)
+    #   from T: [p_TT, p_TR]; from R: [p_RT, p_RR]
+    P = np.array([[p_TT, p_TR],
+                  [p_RT, p_RR]], dtype=float)
+
+    # Each node is (state, prob_mass). Level 0 has single node with prob 1 at s0.
+    levels = [[(s0, 1.0)]]
+    for _ in range(depth):
+        next_level = []
+        for (state, mass) in levels[-1]:
+            # split into T and R children
+            for next_state in (0, 1):
+                trans_p = P[state, next_state]
+                next_level.append((next_state, mass * trans_p))
+        levels.append(next_level)
+
+    # Layout: x = level (0..depth), y = evenly spaced for that level
+    fig, ax = plt.subplots(figsize=(12, 7))
+    ax.set_axis_off()
+    ax.set_xlim(-0.5, depth + 0.5)
+
+    # Pre-compute y positions so siblings are spaced
+    y_positions = []
+    for L in range(depth + 1):
+        n = 2**L
+        # spread between [0,1]
+        ys = np.linspace(1, 0, n + 2)[1:-1]  # trim edges
+        y_positions.append(ys)
+
+    # Store node positions to draw edges
+    node_pos = {}  # (level, idx) -> (x,y,state,prob_mass)
+
+    # Draw nodes with labels
+    for L, nodes in enumerate(levels):
+        for i, (state, mass) in enumerate(nodes):
+            x = L
+            y = y_positions[L][i]
+            node_pos[(L, i)] = (x, y, state, mass)
+            # Node marker & label
+            state_char = "R" if state == 1 else "T"
+            # Circle
+            ax.plot(x, y, "o", markersize=10)
+            # Label: state + prob
+            ax.text(x, y + 0.03, f"{state_char}\n{mass:.3f}", ha="center", va="bottom", fontsize=9)
+
+    # Draw edges with transition prob labels
+    for L in range(depth):
+        parents = levels[L]
+        children = levels[L + 1]
+        for pi, (p_state, p_mass) in enumerate(parents):
+            # children indices for this parent in full binary list
+            ci_left = 2 * pi     # next_state = T
+            ci_right = 2 * pi + 1  # next_state = R
+
+            for ci in (ci_left, ci_right):
+                x0, y0, s0_, _ = node_pos[(L, pi)]
+                x1, y1, s1_, _ = node_pos[(L + 1, ci)]
+                ax.plot([x0, x1], [y0, y1], "-")
+                # edge label: transition probability from parent state to child state
+                trans_p = P[p_state, s1_]
+                xm = (x0 + x1) / 2
+                ym = (y0 + y1) / 2
+                ax.text(xm, ym, f"{trans_p:.2f}", ha="center", va="center", fontsize=8)
+
+    ax.set_title(f"6-step probability tree (start={start_state})\n"
+                 f"P(T->R)={p_TR:.3f}, P(R->R)={p_RR:.3f}", fontsize=12)
+    plt.tight_layout()
+    plt.savefig(figs_dir / fname, dpi=150)
+    plt.close()
+
+# Make both trees and save them in the run's figs folder
+plot_markov_tree(start_state="T", depth=4, fname="tree_start_T.png")
+plot_markov_tree(start_state="R", depth=4, fname="tree_start_R.png")
+
+print(f"Saved tree graphs (4 layers) to {figs_dir / 'tree_start_T.png'} and {figs_dir / 'tree_start_R.png'}")
