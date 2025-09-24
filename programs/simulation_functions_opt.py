@@ -112,7 +112,7 @@ def SimulateBalances(T=365,
                 data.loc[t,'liquid_credits'] = 0
     
             # 3. Generate random consumption
-            #consumption = np.random.normal(mu_consumption,sd_consumption,1)
+            # consumption = np.random.normal(mu_consumption,sd_consumption,1)
             # consumption = lognorm.rvs(scale=mu_consumption,s=sd_consumption, size=1, random_state=None)[0]
             consumption = lognorm.rvs(s=float(sd_c_log), scale=float(np.exp(mu_c_log)), size=1)[0]
             cash_consumption = consumption * cash_consumption_share
@@ -247,7 +247,8 @@ def SimulatePanel(N,T):
         dt_income_paid_grid = dt_income_paid_grid + choices([[1],[28],[7,14,21,28]],k=(N-len(dt_income_paid_grid))) # others randomly choose payment schedule
     cash_consumption_share_grid = np.random.uniform(low=0,high=1,size=N).tolist()
     dt_payment_due_grid = choices([12,13,14,15,16,17,18], k = N)
-    dt_statement_grid = [dt_payment_due_grid[i] + choices([10,9,8,7,6],k=N)[i] for i in range(N)]
+    stmt_offsets = choices([10,9,8,7,6], k=N)   # draw statement offsets once
+    dt_statement_grid = [dt_payment_due_grid[i] + stmt_offsets[i] for i in range(N)]
     def interest(x):
         if x < 8e+04:
             return .2
@@ -258,23 +259,25 @@ def SimulatePanel(N,T):
     rate_interest_grid = [interest(x) for x in liquid_assets0_grid]
     credit_limit_grid = [1e+03*np.ceil((x*12*0.5)/1e+03) for x in mu_income_monthly_grid] #half of annual income rounded to nearest 1K
 
-    panel = pd.DataFrame()
+    frames = []  # collect per-person frames with this array
     for i in tqdm(range(N)):
         # Run simulation for i
-        data_d = SimulateBalances(T,
-                                  liquid_assets0=liquid_assets0_grid[i],
-                                  mu_income_monthly=mu_income_monthly_grid[i],
-                                  sd_income_monthly=sd_income_monthly_grid[i],
-                                  dt_income_paid=dt_income_paid_grid[i],
-                                  cash_consumption_share=cash_consumption_share_grid[i],
-                                  mu_consumption_monthly_target=mu_consumption_monthly_target_grid[i],
-                                  sd_consumption_monthly_target=sd_consumption_monthly_target_grid[i],
-                                  dt_payment_due=dt_payment_due_grid[i],
-                                  dt_statement=dt_statement_grid[i],
-                                  min_payment_flat=35,fee_late=20,
-                                  rate_interest=rate_interest_grid[i],
-                                  credit_limit=credit_limit_grid[i],
-                                  prob_off_date_pay_card=0.05,prob_fullpay_cond_suffliq=.85,prob_liqmin_cond_suffliq=1)
+        data_d = SimulateBalances(
+            T,
+            liquid_assets0=liquid_assets0_grid[i],
+            mu_income_monthly=mu_income_monthly_grid[i],
+            sd_income_monthly=sd_income_monthly_grid[i],
+            dt_income_paid=dt_income_paid_grid[i],
+            cash_consumption_share=cash_consumption_share_grid[i],
+            mu_consumption_monthly_target=mu_consumption_monthly_target_grid[i],
+            sd_consumption_monthly_target=sd_consumption_monthly_target_grid[i],
+            dt_payment_due=dt_payment_due_grid[i],
+            dt_statement=dt_statement_grid[i],
+            min_payment_flat=35, fee_late=20,
+            rate_interest=rate_interest_grid[i],
+            credit_limit=credit_limit_grid[i],
+            prob_off_date_pay_card=0.05, prob_fullpay_cond_suffliq=.85, prob_liqmin_cond_suffliq=1
+        )
 
         # Append simulation parameter values
         data_d['par_rate_interest'] = rate_interest_grid[i]
@@ -291,15 +294,16 @@ def SimulatePanel(N,T):
         data_d['par_dt_statement'] = dt_statement_grid[i]
         data_d['par_min_payment_flat'] = 35
         data_d['par_fee_late'] = 20
-        data_d['par_rate_interest'] = rate_interest_grid[i]
         data_d['par_credit_limit'] = credit_limit_grid[i]
         data_d['par_prob_off_date_pay_card'] = 0.05
-        data_d['par_prob_fullpay_cond_suffliq'] =.85
+        data_d['par_prob_fullpay_cond_suffliq'] = .85
         data_d['par_prob_liqmin_cond_suffliq'] = 1
 
-        # Concatenate panel
-        panel = pd.concat([panel,data_d],axis=0)
+        # Collect instead of concatenating
+        frames.append(data_d)
 
+    # One concat at the end (O(N) instead of O(N^2))
+    panel = pd.concat(frames, axis=0, ignore_index=True)
     # Place 'id' first
     panel = panel[['id'] + [x for x in panel.columns if x != 'id']].reset_index(drop=True)
     return panel
