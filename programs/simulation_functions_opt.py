@@ -150,7 +150,21 @@ def SimulateBalances(T=365,
                     else:
                         # Pay partial according to Uniform
                         # Possibly take into consideration minimum payment - more likely to pay in min payment range and less outside
-                        payment = np.random.uniform(0,1) * amt_due
+                        # payment = np.random.uniform(0,1) * amt_due
+                        # biased partial payments for realistic 'just pay the minimum' behavior
+                        minP = float(data.loc[t, 'min_payment'])
+                        if amt_due <= 0:
+                            payment = 0.0
+                        else:
+                            frac_min = min(1.0, max(0.0, minP / amt_due))  # guard & clamp
+                            # 25% chance: hit exactly the minimum payment (behavioral "anchor")
+                            if np.random.random() < 0.25:
+                                payment = minP
+                            else:
+                                # Draw more mass near low fractions (closer to minP) using a right-skewed Beta
+                                beta_draw = np.random.beta(2.0, 5.0)  # mean ~0.285, skewed toward 0
+                                pay_frac = frac_min + (1.0 - frac_min) * beta_draw
+                                payment = pay_frac * amt_due
                 # Insufficient liquidity for full payment
                 else:
                     # Pay as much as possible with prob `prob_liqmin_cond_suffliq`
