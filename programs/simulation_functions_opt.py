@@ -1,19 +1,31 @@
 # simulation_functions.py #
 # Functions used to run run_panel_simulation.py #
 
+def _lognorm_params_from_mean_sd(mean, sd):
+    """Return (mu, sigma) for SciPy lognorm given linear-space mean & sd."""
+    var = sd**2
+    sigma2 = np.log(1.0 + var/(mean**2)) if mean > 0 else 0.0
+    sigma  = np.sqrt(sigma2)
+    mu     = np.log(mean) - sigma2/2.0 if mean > 0 else -1e9  # degenerate protection
+    return mu, sigma
+
+
 def genDerivedPars(mu_income_monthly,dt_income_paid,sd_income_monthly,mu_consumption_monthly_target,sd_consumption_monthly_target):
     # Per payment moments
     mu_income = mu_income_monthly / len(dt_income_paid)
     sd_income = np.sqrt((sd_income_monthly**2)/len(dt_income_paid))
-    # Mean daily consumption
-    mu_consumption = mu_consumption_monthly_target/30
-    # Daily consumption volatility
-    sd_consumption = np.sqrt((sd_consumption_monthly_target**2)/30) # target vol=10 for the month
+    # Target DAILY linear consumption moments
+    mu_c_daily = mu_consumption_monthly_target / 30.0
+    sd_c_daily = sd_consumption_monthly_target / np.sqrt(30.0)
+    # Convert to LOG-space params for SciPy's lognorm (s=sigma, scale=exp(mu))
+    mu_c_log, sd_c_log = _lognorm_params_from_mean_sd(mu_c_daily, sd_c_daily)
 
-    derived = pd.DataFrame({'mu_income': mu_income,
-                           'sd_income': sd_income,
-                           'mu_consumption': mu_consumption,
-                           'sd_consumption': sd_consumption}, index=[0])
+    derived = pd.DataFrame({
+        'mu_income': [mu_income],
+        'sd_income': [sd_income],
+        'mu_c_log':  [mu_c_log],
+        'sd_c_log':  [sd_c_log],
+    })
     return derived
 
 def initSimData(T,dt_statement):
@@ -49,8 +61,9 @@ def SimulateBalances(T=365,
     derived = genDerivedPars(mu_income_monthly,dt_income_paid,sd_income_monthly,mu_consumption_monthly_target,sd_consumption_monthly_target)
     mu_income = derived['mu_income']
     sd_income  = derived['sd_income']
-    mu_consumption = derived['mu_consumption']
-    sd_consumption = derived['sd_consumption']
+    # Corrected lognormal params
+    mu_c_log = derived['mu_c_log']
+    sd_c_log = derived['sd_c_log']
     
     for t in range((T+1)):
         dt_today = data['dt'][t]
@@ -100,7 +113,8 @@ def SimulateBalances(T=365,
     
             # 3. Generate random consumption
             #consumption = np.random.normal(mu_consumption,sd_consumption,1)
-            consumption = lognorm.rvs(scale=mu_consumption,s=sd_consumption, size=1, random_state=None)[0]
+            # consumption = lognorm.rvs(scale=mu_consumption,s=sd_consumption, size=1, random_state=None)[0]
+            consumption = lognorm.rvs(s=float(sd_c_log), scale=float(np.exp(mu_c_log)), size=1)[0]
             cash_consumption = consumption * cash_consumption_share
             cc_consumption = consumption * (1-cash_consumption_share)
     
@@ -128,7 +142,9 @@ def SimulateBalances(T=365,
             # 5. Compute minimum payment
             # often $25-35 flat fee or 1% (see https://www.experian.com/blogs/ask-experian/how-is-your-credit-card-minimum-payment-calculated/)
             # often computed on statement balance (see https://www.experian.com/blogs/ask-experian/how-is-your-credit-card-minimum-payment-calculated/
-            data.loc[t,'min_payment'] = min_payment_flat
+            min_payment_percent = 0.01
+            # max(flat, 1% of statement balance)
+            data.loc[t,'min_payment'] = max(min_payment_flat, min_payment_percent * max(data.loc[t,'statement_balance'], 0.0))
     
             # 6. Payments to card (assume payment due after first full month)
                 # Is payment due date
