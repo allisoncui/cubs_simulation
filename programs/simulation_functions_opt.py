@@ -20,13 +20,7 @@ def genDerivedPars(mu_income_monthly,dt_income_paid,sd_income_monthly,mu_consump
     # Convert to LOG-space params for SciPy's lognorm (s=sigma, scale=exp(mu))
     mu_c_log, sd_c_log = _lognorm_params_from_mean_sd(mu_c_daily, sd_c_daily)
 
-    derived = pd.DataFrame({
-        'mu_income': [mu_income],
-        'sd_income': [sd_income],
-        'mu_c_log':  [mu_c_log],
-        'sd_c_log':  [sd_c_log],
-    })
-    return derived
+    return mu_income, sd_income, mu_c_log, sd_c_log
 
 def initSimData(T,dt_statement):
     # Create data structure
@@ -58,12 +52,7 @@ def SimulateBalances(T=365,
     first_full_dt = initSim[1]
 
     # Generate derived variables
-    derived = genDerivedPars(mu_income_monthly,dt_income_paid,sd_income_monthly,mu_consumption_monthly_target,sd_consumption_monthly_target)
-    mu_income = derived['mu_income']
-    sd_income  = derived['sd_income']
-    # Corrected lognormal params
-    mu_c_log = derived['mu_c_log']
-    sd_c_log = derived['sd_c_log']
+    mu_income, sd_income, mu_c_log, sd_c_log = genDerivedPars(mu_income_monthly,dt_income_paid,sd_income_monthly,mu_consumption_monthly_target,sd_consumption_monthly_target)
     
     for t in range((T+1)):
         dt_today = data['dt'][t]
@@ -267,12 +256,7 @@ def SimulateBalances_fast(
     # first full month start
     first_full_dt = np.datetime64('2010-01-01')
     # derived params with lognormal
-    derived = genDerivedPars(mu_income_monthly, dt_income_paid, sd_income_monthly,
-                             mu_consumption_monthly_target, sd_consumption_monthly_target)
-    mu_income = float(derived['mu_income'])
-    sd_income = float(derived['sd_income'])
-    mu_c_log = float(derived['mu_c_log'])
-    sd_c_log = float(derived['sd_c_log'])
+    mu_income, sd_income, mu_c_log, sd_c_log = genDerivedPars(mu_income_monthly, dt_income_paid, sd_income_monthly, mu_consumption_monthly_target, sd_consumption_monthly_target)
 
     # preallocate arrays in numpy
     liquid_assets = np.zeros(T+1, dtype=np.float64)
@@ -450,8 +434,13 @@ def SimulatePanel(N,T):
     liquid_assets0_grid = lognorm.rvs(scale=1e+05,s=.5, size=N, random_state=None).tolist()
     mu_income_monthly_grid = lognorm.rvs(scale=1.2e+05/12,s=.5, size=N, random_state=None).tolist()
     sd_income_monthly_grid = lognorm.rvs(scale=3,s=.5, size=N, random_state=None).tolist()
-    mu_consumption_monthly_target_grid = lognorm.rvs(scale=3000,s=.5, size=N, random_state=None).tolist()
-    sd_consumption_monthly_target_grid = lognorm.rvs(scale=3,s=.5, size=N, random_state=None).tolist()
+    # monthly consumption mean
+    mu_consumption_monthly_target_grid = lognorm.rvs(scale=3000, s=.5, size=N, random_state=None).tolist()
+    # draw coefficient of variation (20%–60%), controls relativity and gives daily consumption a realistic spread
+    cv_grid = np.random.uniform(low=0.2, high=0.6, size=N)
+    # convert to SD as fraction of mean
+    sd_consumption_monthly_target_grid = (cv_grid * np.array(mu_consumption_monthly_target_grid)).tolist()
+
     dt_income_paid_grid = [[14,28]]*int((np.ceil(N*.7))) # Force 70% of users to be paid bi-weekly
     if (N > len(dt_income_paid_grid)):
         dt_income_paid_grid = dt_income_paid_grid + choices([[1],[28],[7,14,21,28]],k=(N-len(dt_income_paid_grid))) # others randomly choose payment schedule
